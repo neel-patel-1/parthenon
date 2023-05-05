@@ -11,13 +11,14 @@
 # the public, perform publicly and display publicly, and to permit others to do so.
 #=========================================================================================
 
-add_subdirectory(stochastic_subgrid)
-add_subdirectory(advection)
-add_subdirectory(calculate_pi)
-add_subdirectory(datapacking)
-add_subdirectory(kokkos_pi)
-add_subdirectory(particles)
-add_subdirectory(particle_leapfrog)
-add_subdirectory(particle_tracers)
-add_subdirectory(poisson)
-add_subdirectory(sparse_advection)
+get_property(DRIVER_LIST GLOBAL PROPERTY DRIVERS_USED_IN_TESTS)
+if( "datapack-test" IN_LIST DRIVER_LIST OR NOT PARTHENON_DISABLE_EXAMPLES)
+  add_executable(
+    datapack-test
+          main.cpp
+          data_pack.hpp
+          data_pack.cpp
+  )
+  target_link_libraries(datapack-test PRIVATE Parthenon::parthenon)
+  lint_target(datapack-test)
+endif()
