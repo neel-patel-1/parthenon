@@ -15,7 +15,6 @@ get_property(DRIVER_LIST GLOBAL PROPERTY DRIVERS_USED_IN_TESTS)
 if( "datapack-test" IN_LIST DRIVER_LIST OR NOT PARTHENON_DISABLE_EXAMPLES)
   add_executable(
     datapack-test
-          main.cpp
           data_pack.hpp
           data_pack.cpp
   )

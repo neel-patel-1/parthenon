@@ -15,7 +15,7 @@
 // the public, perform publicly and display publicly, and to permit others to do so.
 //========================================================================================
 
-#include "data_pack.hpp"
+
 
 #include <algorithm>
 #include <cmath>
@@ -36,298 +36,104 @@
 #include "interface/update.hpp"
 #include "kokkos_abstraction.hpp"
 
-// *************************************************//
-// redefine some internal parthenon functions      *//
-// *************************************************//
+#include "data_pack.hpp"
+#include "parthenon_manager.hpp"
+
+/* Package Code */
 namespace data_pack {
 
 Packages_t ProcessPackages(std::unique_ptr<ParameterInput> &pin) {
   Packages_t packages;
-  packages.Add(DataPack::Initialize(pin.get()));
+  packages.Add(data_pack::Initialize(pin.get()));
   return packages;
 }
 
-// *************************************************//
-// define the "physics" package DataPack_package, *//
-// which includes defining various functions that  *//
-// control how parthenon functions and any tasks   *//
-// needed to implement the "physics"               *//
-// *************************************************//
-
-namespace DataPack {
-
 std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin) {
-  auto pkg = std::make_shared<StateDescriptor>("DataPack_package");
+  auto pkg = std::make_shared<StateDescriptor>("data_pack");
+  Params &params = pkg->AllParams();
 
-  Real cfl = pin->GetOrAddReal("DataPack", "cfl", 0.3);
-  pkg->AddParam<>("cfl", cfl);
+  int n3 = 10;
+  int n2 = 20;
+  int n1 = 30;
 
-  auto write_particle_log_nth_cycle =
-      pin->GetOrAddInteger("DataPack", "write_particle_log_nth_cycle", 0);
-  pkg->AddParam<>("write_particle_log_nth_cycle", write_particle_log_nth_cycle);
-
-  std::string swarm_name = "my_DataPack";
-  Metadata swarm_metadata({Metadata::Provides, Metadata::None, Metadata::Independent});
-  pkg->AddSwarm(swarm_name, swarm_metadata);
-  pkg->AddSwarmValue("id", swarm_name, Metadata({Metadata::Integer}));
-  Metadata vreal_swarmvalue_metadata({Metadata::Real, Metadata::Vector},
-                                     std::vector<int>{3});
-  pkg->AddSwarmValue("v", swarm_name, vreal_swarmvalue_metadata);
-  Metadata vvreal_swarmvalue_metadata({Metadata::Real}, std::vector<int>{3, 3});
-  pkg->AddSwarmValue("vv", swarm_name, vvreal_swarmvalue_metadata);
-
-  pkg->EstimateTimestepBlock = EstimateTimestepBlock;
+  auto m = Metadata({Metadata::Tensor, Metadata::Requires});
+  ParArrayND<double> arr_3d("my_tensor",n3, n2, n1);
 
   return pkg;
 }
 
-Real EstimateTimestepBlock(MeshBlockData<Real> *rc) {
-  auto pmb = rc->GetBlockPointer();
-  auto swarm = pmb->swarm_data.Get()->Get("my_DataPack");
-  auto pkg = pmb->packages.Get("DataPack_package");
-  const auto &cfl = pkg->Param<Real>("cfl");
-
-  int max_active_index = swarm->GetMaxActiveIndex();
-
-  const auto &v = swarm->Get<Real>("v").Get();
-
-  // Assumes a grid with constant dx, dy, dz within a block
-  const Real &dx_i = pmb->coords.Dxf<1>(0);
-  const Real &dx_j = pmb->coords.Dxf<2>(0);
-  const Real &dx_k = pmb->coords.Dxf<3>(0);
-  const Real &dx_push = std::min<Real>(dx_i, std::min<Real>(dx_j, dx_k));
-
-  auto swarm_d = swarm->GetDeviceContext();
-
-  Real min_dt;
-  pmb->par_reduce(
-      "particle_leapfrog:EstimateTimestep", 0, max_active_index,
-      KOKKOS_LAMBDA(const int n, Real &lmin_dt) {
-        if (swarm_d.IsActive(n)) {
-          const Real vel =
-              sqrt(v(0, n) * v(0, n) + v(1, n) * v(1, n) + v(2, n) * v(2, n));
-          if (vel != 0.0) {
-            lmin_dt = std::min(lmin_dt, dx_push / vel);
-          }
-        }
-      },
-      Kokkos::Min<Real>(min_dt));
-
-  return cfl * min_dt;
-}
-
-} // namespace DataPack
-
-// initial particle position: x,y,z,vx,vy,vz
-constexpr int num_test_DataPack = 14;
-const Kokkos::Array<Kokkos::Array<Real, 6>, num_test_DataPack> DataPack_ic = {{
-    {-0.1, 0.2, 0.3, 1.0, 0.0, 0.0},   // along x direction
-    {0.4, -0.1, 0.3, 0.0, 1.0, 0.0},   // along y direction
-    {-0.1, 0.3, 0.2, 0.0, 0.0, 0.5},   // along z direction
-    {0.0, 0.0, 0.0, -1.0, 0.0, 0.0},   // along -x direction
-    {0.0, 0.0, 0.0, 0.0, -1.0, 0.0},   // along -y direction
-    {0.0, 0.0, 0.0, 0.0, 0.0, -1.0},   // along -z direction
-    {0.0, 0.0, 0.0, 1.0, 1.0, 1.0},    // along xyz diagonal
-    {0.0, 0.0, 0.0, -1.0, 1.0, 1.0},   // along -xyz diagonal
-    {0.0, 0.0, 0.0, 1.0, -1.0, 1.0},   // along x-yz diagonal
-    {0.0, 0.0, 0.0, 1.0, 1.0, -1.0},   // along xy-z diagonal
-    {0.0, 0.0, 0.0, -1.0, -1.0, 1.0},  // along -x-yz diagonal
-    {0.0, 0.0, 0.0, 1.0, -1.0, -1.0},  // along x-y-z diagonal
-    {0.0, 0.0, 0.0, -1.0, 1.0, -1.0},  // along -xy-z diagonal
-    {0.0, 0.0, 0.0, -1.0, -1.0, -1.0}, // along -x-y-z diagonal
-}};
-
-void ProblemGenerator(MeshBlock *pmb, ParameterInput *pin) {
-  auto pkg = pmb->packages.Get("DataPack_package");
-  auto swarm = pmb->swarm_data.Get()->Get("my_DataPack");
-
-  const IndexRange &ib = pmb->cellbounds.GetBoundsI(IndexDomain::interior);
-  const IndexRange &jb = pmb->cellbounds.GetBoundsJ(IndexDomain::interior);
-  const IndexRange &kb = pmb->cellbounds.GetBoundsK(IndexDomain::interior);
-
-  const Real &x_min = pmb->coords.Xf<1>(ib.s);
-  const Real &y_min = pmb->coords.Xf<2>(jb.s);
-  const Real &z_min = pmb->coords.Xf<3>(kb.s);
-  const Real &x_max = pmb->coords.Xf<1>(ib.e + 1);
-  const Real &y_max = pmb->coords.Xf<2>(jb.e + 1);
-  const Real &z_max = pmb->coords.Xf<3>(kb.e + 1);
-
-  const auto &ic = DataPack_ic;
-
-  // determine which DataPack belong to this block
-  size_t num_DataPack_this_block = 0;
-  auto ids_this_block =
-      ParArray1D<int>("indices of DataPack in test", num_test_DataPack);
-
-  auto ids_this_block_h =
-      Kokkos::create_mirror_view_and_copy(HostMemSpace(), ids_this_block);
-
-  for (auto n = 0; n < num_test_DataPack; n++) {
-    const Real &x_ = ic[n][0];
-    const Real &y_ = ic[n][1];
-    const Real &z_ = ic[n][2];
-
-    if ((x_ >= x_min) && (x_ < x_max) && (y_ >= y_min) && (y_ < y_max) && (z_ >= z_min) &&
-        (z_ < z_max)) {
-      ids_this_block_h(num_DataPack_this_block) = n;
-      num_DataPack_this_block++;
-    }
-  }
-
-  Kokkos::deep_copy(pmb->exec_space, ids_this_block, ids_this_block_h);
-
-  ParArrayND<int> new_indices;
-  const auto new_DataPack_mask =
-      swarm->AddEmptyParticles(num_DataPack_this_block, new_indices);
-
-  auto &id = swarm->Get<int>("id").Get();
-  auto &x = swarm->Get<Real>("x").Get();
-  auto &y = swarm->Get<Real>("y").Get();
-  auto &z = swarm->Get<Real>("z").Get();
-  auto &v = swarm->Get<Real>("v").Get();
-  auto &vv = swarm->Get<Real>("vv").Get();
-
-  // This hardcoded implementation should only used in PGEN and not during runtime
-  // addition of DataPack as indices need to be taken into account.
-  pmb->par_for(
-      "CreateDataPack", 0, num_DataPack_this_block - 1, KOKKOS_LAMBDA(const int n) {
-        const auto &m = ids_this_block(n);
-
-        id(n) = m; // global unique id
-        x(n) = ic[m][0];
-        y(n) = ic[m][1];
-        z(n) = ic[m][2];
-        v(0, n) = ic[m][3];
-        v(1, n) = ic[m][4];
-        v(2, n) = ic[m][5];
-        for (int i = 0; i < 3; i++) {
-          for (int j = 0; j < 3; j++) {
-            vv(i, j, n) = v(i, n) * v(j, n);
-          }
-        }
-      });
-}
-
-TaskStatus TransportDataPack(MeshBlock *pmb, const StagedIntegrator *integrator) {
-  auto swarm = pmb->swarm_data.Get()->Get("my_DataPack");
-  auto pkg = pmb->packages.Get("DataPack_package");
-
-  int max_active_index = swarm->GetMaxActiveIndex();
-
-  Real dt = integrator->dt;
-
-  auto &id = swarm->Get<int>("id").Get();
-  auto &x = swarm->Get<Real>("x").Get();
-  auto &y = swarm->Get<Real>("y").Get();
-  auto &z = swarm->Get<Real>("z").Get();
-  auto &v = swarm->Get<Real>("v").Get();
-
-  auto swarm_d = swarm->GetDeviceContext();
-  // keep DataPack on existing trajectory for now
-  const Real ax = 0.0;
-  const Real ay = 0.0;
-  const Real az = 0.0;
-  pmb->par_for(
-      "Leapfrog", 0, max_active_index, KOKKOS_LAMBDA(const int n) {
-        if (swarm_d.IsActive(n)) {
-          // drift
-          x(n) += v(0, n) * 0.5 * dt;
-          y(n) += v(1, n) * 0.5 * dt;
-          z(n) += v(2, n) * 0.5 * dt;
-
-          // kick
-          v(0, n) += ax * dt;
-          v(1, n) += ay * dt;
-          v(2, n) += az * dt;
-
-          // drift
-          x(n) += v(0, n) * 0.5 * dt;
-          y(n) += v(1, n) * 0.5 * dt;
-          z(n) += v(2, n) * 0.5 * dt;
-
-          bool on_current_mesh_block = true;
-          swarm_d.GetNeighborBlockIndex(n, x(n), y(n), z(n), on_current_mesh_block);
-        }
-      });
-
+TaskStatus DoReduction(Packages_t &packages){
+  Real r_val;
+  r_val = 10.0;
+  packages.Get("data_pack")->AddParam("reduce_val", r_val);
   return TaskStatus::complete;
 }
 
-// Custom step function to allow for looping over MPI-related tasks until complete
-TaskListStatus DataPackDriver::Step() {
-  TaskListStatus status;
-  integrator.dt = tm.dt;
-
-  BlockList_t &blocks = pmesh->block_list;
-  auto num_task_lists_executed_independently = blocks.size();
-
-  status = MakeDataPackUpdateTaskCollection().Execute();
-
-  // Use a more traditional task list for predictable post-MPI evaluations.
-  status = MakeFinalizationTaskCollection().Execute();
-
-  return status;
-}
-
-TaskCollection DataPackDriver::MakeDataPackUpdateTaskCollection() const {
-  TaskCollection tc;
-  TaskID none(0);
-  const BlockList_t &blocks = pmesh->block_list;
-
-  auto num_task_lists_executed_independently = blocks.size();
-
-  TaskRegion &sync_region0 = tc.AddRegion(1);
-  {
-    for (int i = 0; i < blocks.size(); i++) {
-      auto &tl = sync_region0[0];
-      auto &pmb = blocks[i];
-      auto &sc = pmb->swarm_data.Get();
-      auto reset_comms = tl.AddTask(none, &SwarmContainer::ResetCommunication, sc.get());
-    }
-  }
-
-  TaskRegion &async_region0 = tc.AddRegion(num_task_lists_executed_independently);
-  for (int i = 0; i < blocks.size(); i++) {
-    auto &pmb = blocks[i];
-
-    auto &sc = pmb->swarm_data.Get();
-
-    auto &tl = async_region0[i];
-
-    auto transport_DataPack =
-        tl.AddTask(none, TransportDataPack, pmb.get(), &integrator);
-
-    auto send = tl.AddTask(transport_DataPack, &SwarmContainer::Send, sc.get(),
-                           BoundaryCommSubset::all);
-    auto receive =
-        tl.AddTask(send, &SwarmContainer::Receive, sc.get(), BoundaryCommSubset::all);
-  }
-
-  return tc;
-}
-
-TaskCollection DataPackDriver::MakeFinalizationTaskCollection() const {
-  TaskCollection tc;
-  TaskID none(0);
-  BlockList_t &blocks = pmesh->block_list;
-
-  auto num_task_lists_executed_independently = blocks.size();
-  TaskRegion &async_region1 = tc.AddRegion(num_task_lists_executed_independently);
-
-  for (int i = 0; i < blocks.size(); i++) {
-    auto &pmb = blocks[i];
-    auto &sc = pmb->swarm_data.Get();
-    auto &tl = async_region1[i];
-
-    // Defragment if swarm memory pool occupancy is 90%
-    auto defrag = tl.AddTask(none, &SwarmContainer::Defrag, sc.get(), 0.9);
-
-    auto new_dt =
-        tl.AddTask(defrag, parthenon::Update::EstimateTimestep<MeshBlockData<Real>>,
-                   pmb->meshblock_data.Get().get());
-  }
-
-  return tc;
-}
-
 } // namespace data_pack
+
+/* Driver Code */
+namespace DataPack{
+
+using namespace parthenon::driver::prelude;
+
+  DriverStatus DataPackDriver::Execute(){
+    auto &r_val = pmesh->packages.Get("data_pack")->Param<Real>("reduce_val");
+    std::cout<<"Reduction Complete: "<< r_val <<std::endl;
+    return DriverStatus::complete;
+  }
+ 
+template <typename T>
+TaskCollection DataPackDriver::MakeTaskCollection(T &blocks) {
+  using data_pack::DoReduction;
+  TaskCollection tc;
+
+  TaskRegion &sync_region = tc.AddRegion(0);
+  {
+    TaskID none(0);
+    auto perform_reduce =
+        sync_region[0].AddTask(none, DoReduction, pmesh->packages);
+  }
+
+  return tc;
+}
+}// namespace data_pack
+
+
+/* Main */
+int main(int argc, char *argv[]) {
+  using parthenon::ParthenonManager;
+  using parthenon::ParthenonStatus;
+  ParthenonManager pman;
+
+  // Redefine parthenon defaults
+  pman.app_input->ProcessPackages = data_pack::ProcessPackages;
+
+  // call ParthenonInit to initialize MPI and Kokkos, parse the input deck, and set up
+  auto manager_status = pman.ParthenonInit(argc, argv);
+  if (manager_status == ParthenonStatus::complete) {
+    pman.ParthenonFinalize();
+    return 0;
+  }
+  if (manager_status == ParthenonStatus::error) {
+    pman.ParthenonFinalize();
+    return 1;
+  }
+  // Now that ParthenonInit has been called and setup succeeded, the code can now
+  // make use of MPI and Kokkos
+
+  // This needs to be scoped so that the driver object is destructed before Finalize
+  {
+    // Initialize the driver
+    DataPack::DataPackDriver driver(pman.pinput.get(), pman.app_input.get(),
+                                              pman.pmesh.get());
+
+    // This line actually runs the simulation
+    auto driver_status = driver.Execute();
+  }
+  // call MPI_Finalize and Kokkos::finalize if necessary
+  pman.ParthenonFinalize();
+
+  // MPI and Kokkos can no longer be used
+
+  return (0);
+}

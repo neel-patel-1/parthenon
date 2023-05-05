@@ -24,35 +24,32 @@
 #include <parthenon/driver.hpp>
 #include <parthenon/package.hpp>
 
-using namespace parthenon::driver::prelude;
-using namespace parthenon::package::prelude;
-using namespace parthenon;
-
 namespace data_pack {
+  using namespace parthenon::package::prelude;
+  using parthenon::Packages_t;
+  using parthenon::ParArrayHost;
+  using Pack_t = parthenon::MeshBlockVarPack<Real>;
 
-class DataPackDriver : public EvolutionDriver {
- public:
-  DataPackDriver(ParameterInput *pin, ApplicationInput *app_in, Mesh *pm)
-      : EvolutionDriver(pin, app_in, pm), integrator(pin) {}
-  TaskCollection MakeDataPackUpdateTaskCollection() const;
-  TaskCollection MakeFinalizationTaskCollection() const;
-  TaskListStatus Step();
+  std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin);
 
- private:
-  LowStorageIntegrator integrator;
-};
-
-void ProblemGenerator(MeshBlock *pmb, ParameterInput *pin);
-Packages_t ProcessPackages(std::unique_ptr<ParameterInput> &pin);
-
-namespace DataPack {
-
-std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin);
-AmrTag CheckRefinement(MeshBlockData<Real> *rc);
-Real EstimateTimestepBlock(MeshBlockData<Real> *rc);
-
-} // namespace Datapack
+  parthenon::TaskStatus DoReduction(Packages_t &packages);
 
 } // namespace data_pack
+
+namespace DataPack{
+using namespace parthenon::driver::prelude;
+  class DataPackDriver : public Driver {
+  public:
+    DataPackDriver(ParameterInput *pin, ApplicationInput *app_in, Mesh *pm)
+        : Driver(pin, app_in, pm) {}
+    
+    /* Not required, but a collection or list of tasks is expected. */
+    template <typename T>
+    TaskCollection MakeTaskCollection(T &blocks);
+
+    /* Define the drivers execute function*/
+    DriverStatus Execute() override;
+  };
+} //namespace DataPack
 
 #endif // EXAMPLE_PARTICLE_LEAPFROG_PARTICLE_LEAPFROG_HPP_
