@@ -77,6 +77,11 @@ namespace DataPack{
 using namespace parthenon::driver::prelude;
 
   DriverStatus DataPackDriver::Execute(){
+    // pouts->MakeOutputs(pmesh, pinput);
+
+    // The tasks compute pi and store it in the param "pi_val"
+    ConstructAndExecuteTaskLists<>(this);
+
     auto &r_val = pmesh->packages.Get("data_pack")->Param<Real>("reduce_val");
     std::cout<<"Reduction Complete: "<< r_val <<std::endl;
     return DriverStatus::complete;
@@ -86,8 +91,7 @@ template <typename T>
 TaskCollection DataPackDriver::MakeTaskCollection(T &blocks) {
   using data_pack::DoReduction;
   TaskCollection tc;
-
-  TaskRegion &sync_region = tc.AddRegion(0);
+  TaskRegion &sync_region = tc.AddRegion(1);
   {
     TaskID none(0);
     auto perform_reduce =
